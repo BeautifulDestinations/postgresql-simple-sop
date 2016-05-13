@@ -24,18 +24,20 @@ instance ToRow Person where toRow = gtoRow
 
 -}
 
-module Database.PostgreSQL.Simple.SOP (gfromRow, gtoRow, gselectFrom, ginsertInto, ginsertManyInto, HasFieldNames, fieldNames) where
+module Database.PostgreSQL.Simple.SOP (gfromRow, gtoRow, gselectFrom, ginsertInto, ginsertManyInto, HasFieldNames (..), HasTable (..), gselect, ginsertNoKey, HasKey (..), getByKey, gdelete, ginsert, gupdate, gupsert, gfastInsert) where
 
 import Generics.SOP
 import Control.Applicative
 import Data.Monoid ((<>))
-import Data.List (intercalate)
+import Data.List (intercalate, intersperse)
 import Data.String (fromString)
+import Data.Maybe (listToMaybe)
 
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.FromRow
 import Database.PostgreSQL.Simple.FromField
 import Database.PostgreSQL.Simple.ToField
+import Database.PostgreSQL.Simple.ToRow
 
 --
 
@@ -118,13 +120,21 @@ ginsertManyInto conn tbl vals = do
 class (HasFieldNames a, FromRow a, ToRow a) => HasTable a where
   tableName :: Proxy a -> Query
 
-gselect :: forall r q. (ToRow q, FromRow r, Generic r, HasFieldNames r) => Connection -> Query -> q -> IO [r]
+{-|Generic select using table name from class
+
+@
+do p :: [Person] <- gselect conn \"where name = ?\" (Only theName)
+@
+
+-}
+gselect :: forall r q. (ToRow q, FromRow r, HasTable r) => Connection -> Query -> q -> IO [r]
 gselect conn q1 args = do
   let fullq = "select " <> (fromString $ intercalate "," $ fieldNames $ (Proxy :: Proxy r) ) <> " from "
                         <> tableName (Proxy :: Proxy r) <> " " <> q1
   query conn fullq args
 
 ginsertNoKey :: forall r. (ToRow r, Generic r, HasFieldNames r) => Connection  -> r -> IO ()
+-- |Insert without knowing about primary keys. Do not use this if your table has a key
 ginsertNoKey conn  val = do
   let fnms = fieldNames $ (Proxy :: Proxy r)
   _ <- execute conn ("INSERT INTO " <> tableName (Proxy :: Proxy r) <> " (" <>
@@ -141,32 +151,82 @@ gcount conn q1 args = do
                         <> tableName (Proxy :: Proxy r) <> " " <> q1
   fmap (head . unOnly) $ query conn fullq args
 
-class HasTable a => HasKey a
+class HasTable a => HasKey a where
    type Key a
    getKey :: a -> Key a
    keyName :: Proxy a -> Query
    autoIncrementingKey :: Proxy a -> Bool
 
-getByKey :: (HasKey a, ToField (Key a)) => Connection -> Key a -> IO (Maybe a)
-getByKey conn key = gselectWhere (keyName (Proxy :: Proxy a) " = ?") (Only  key)
 
-deleteByKey :: (HasKey a, ToField (Key a)) => Connection -> Key a -> IO ()
-deleteByKey conn key = exectue conn ("delete from "<>tableName (Proxy :: Proxy r)<>" where "
-                                     <> (keyName (Proxy :: Proxy a) " = ?")) (Only  key)
+getByKey :: forall a . (HasKey a, ToField (Key a)) => Connection -> Key a -> IO (Maybe a)
+getByKey conn key = fmap listToMaybe $ gselect conn ("where "<>keyName (Proxy :: Proxy a)<>" = ?") (Only  key)
 
-ginsert :: (HasKey a, ToField (Key a)) => Connection -> a -> IO (Key a)
-ginsert conn val = do
-  if autoIncrementingKey $ Proxy :: Proxy a
-     then ginsertSerial
-     else ginsertNoKey conn val
-   where ginsertSerial = do
-           let kName = keyName $ Proxy :: Proxy a
-               tblName = tableName $ Proxy :: Proxy r
-               fldNms = map fromString $ fieldNames $ (Proxy :: Proxy r)
-               fldNmsNoKey = filter (/=kName) fldNms
-               qmarks = mconcat $ intersperse "," $ map (const "?") fldNms
-               fields = mconcat $ intersperse "," $ fldNms
-               rows = toRow val
-               q = "insert into "<>tblNameM<>"("<>fields<>") values ("<>qmarks<>") returning "<>kName
-               args = map snd $ filter ((/=kName) . fst) $ zip fldNms rows
-           query conn q args
+-- |Delete a row (based on primary key)
+gdelete :: forall a . (HasKey a, ToField (Key a)) => Connection -> a -> IO ()
+gdelete conn x = do execute conn ("delete from "<>tableName (Proxy :: Proxy a)<>" where "
+                                  <> (keyName (Proxy :: Proxy a)<> " = ?")) (Only $ getKey x)
+                    return ()
+
+-- |Insert a new value, respecting primary keys whether they are autoincrementing or not
+ginsert :: forall a . (HasKey a, ToField (Key a), FromField (Key a)) => Connection -> a -> IO (Key a)
+ginsert conn val =
+    if autoIncrementingKey proxy
+       then ginsertSerial
+    else do
+      ginsertNoKey conn val
+      return $ getKey val
+   where
+     proxy = Proxy :: Proxy a
+     ginsertSerial = do
+       let kName = keyName proxy
+           tblName = tableName proxy
+           fldNms = map fromString $ fieldNames proxy
+           fldNmsNoKey = filter (/=kName) fldNms
+           qmarks = mconcat $ intersperse "," $ map (const "?") fldNmsNoKey
+           qFldNms = mconcat $ intersperse "," fldNmsNoKey
+           qArgs = map snd . filter ((/=kName) . fst) . zip fldNms $ toRow val
+           q = "insert into "<>tblName<>" ("<>qFldNms<>") values ("<>qmarks<>") returning "<>kName
+       res <- query conn q qArgs
+       case res of
+         [] -> fail $ "no key returned from "++show tblName
+         Only k : _ -> return k
+
+-- |Update a row, based on its primary key
+gupdate :: forall a . (HasKey a, ToField (Key a)) => Connection -> a -> IO ()
+gupdate conn val = do
+  let kName = keyName (Proxy :: Proxy a)
+      tblName = tableName (Proxy :: Proxy a)
+      fldNms = map fromString $ fieldNames (Proxy :: Proxy a)
+      fldNmsNoKey = filter (/=kName) fldNms
+      rows = toRow val
+      vargs = filter ((/=kName) . fst) $ zip fldNms rows
+      setq = mconcat $ intersperse "," $ map (\(k,v) -> k <> " = ? " ) vargs
+      q = "update "<>tblName<>" set "<>setq<>" where "<>kName<>" = ?"
+  execute conn q (map snd vargs ++ [toField $ getKey val])
+  return ()
+
+-- |If a row does not exist, insert it; otherwise update it
+gupsert :: forall a . (HasKey a, ToField (Key a), FromField (Key a)) => Connection -> a -> IO (Key a)
+gupsert conn val = do
+  ex :: Maybe a <- getByKey conn $ getKey val
+  case ex of
+    Nothing -> ginsert conn val
+    Just _ -> gupdate conn val >> return (getKey val)
+
+-- |If a row does not exist, insert it; otherwise do nothing; in one SQL query
+gfastInsert ::  forall a . (HasKey a, ToField (Key a), FromField (Key a)) => Connection -> a -> IO ()
+gfastInsert conn val = do
+  let kName = keyName (Proxy :: Proxy a)
+      tblName = tableName (Proxy :: Proxy a)
+      fldNms = map fromString $ fieldNames (Proxy :: Proxy a)
+      rows = toRow val
+      vargs = if autoIncrementingKey (Proxy :: Proxy a)
+                       then filter ((/=kName) . fst) $ zip fldNms rows
+                       else zip fldNms rows
+      qmarks = mconcat $ intersperse "," $ map (const "?") vargs
+      fields = mconcat $ intersperse "," $ map fst vargs
+      q = "insert into "<>tblName<>"("<>fields<>") select "<>qmarks<>
+          " where not exists (select 1 from "<>tblName<>" where "<>kName<>"=?)"
+      args = map snd vargs
+  execute conn q (args :. Only (getKey val))
+  return ()
