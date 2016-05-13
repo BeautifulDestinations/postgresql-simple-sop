@@ -133,8 +133,8 @@ gselect conn q1 args = do
                         <> tableName (Proxy :: Proxy r) <> " " <> q1
   query conn fullq args
 
-ginsertNoKey :: forall r. (ToRow r, Generic r, HasFieldNames r) => Connection  -> r -> IO ()
 -- |Insert without knowing about primary keys. Do not use this if your table has a key
+ginsertNoKey :: forall r. (ToRow r, HasTable r) => Connection  -> r -> IO ()
 ginsertNoKey conn  val = do
   let fnms = fieldNames $ (Proxy :: Proxy r)
   _ <- execute conn ("INSERT INTO " <> tableName (Proxy :: Proxy r) <> " (" <>
@@ -143,13 +143,6 @@ ginsertNoKey conn  val = do
                      (fromString $ intercalate "," $ map (const "?") fnms) <> ")")
                val
   return ()
-
-gcount :: :: forall r q. (ToRow q, FromRow r, Generic r, HasFieldNames r) => Connection -> Query -> q -> IO Int
-gcount conn q1 args = do
-  let unOnly (Only x) = x
-      fullq = "select count(*) from "
-                        <> tableName (Proxy :: Proxy r) <> " " <> q1
-  fmap (head . unOnly) $ query conn fullq args
 
 class HasTable a => HasKey a where
    type Key a
