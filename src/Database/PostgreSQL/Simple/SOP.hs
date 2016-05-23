@@ -24,7 +24,7 @@ instance ToRow Person where toRow = gtoRow
 
 -}
 
-module Database.PostgreSQL.Simple.SOP (gfromRow, gtoRow, gselectFrom, ginsertInto, ginsertManyInto, HasFieldNames (..), HasTable (..), gselect, ginsertNoKey, HasKey (..), getByKey, gdelete, ginsert, gupdate, gupsert, gfastInsert) where
+module Database.PostgreSQL.Simple.SOP (gfromRow, gtoRow, gselectFrom, ginsertInto, ginsertManyInto, HasFieldNames (..), HasTable (..), gselect, ginsertNoKey, HasKey (..),KeyField (..), getByKey, gdelete, ginsert, gupdate, gupsert, gfastInsert) where
 
 import Generics.SOP
 import Control.Applicative
