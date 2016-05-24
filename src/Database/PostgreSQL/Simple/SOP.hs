@@ -200,7 +200,7 @@ ginsert conn val = do
                tblName = tableName (Proxy :: Proxy a)
                fldNms = map fromString $ fieldNames (Proxy :: Proxy a)
                fldNmsNoKey = filter (/=kName) fldNms
-               qmarks = mconcat $ intersperse "," $ map (const "?") fldNms
+               qmarks = mconcat $ intersperse "," $ map (const "?") fldNmsNoKey
                fields = mconcat $ intersperse "," $ fldNmsNoKey
                qArgs = map snd $ filter ((/=kName) . fst) $ zip fldNms $ toRow val
                q = "insert into "<>tblName<>"("<>fields<>") values ("<>qmarks<>") returning "<>kName
