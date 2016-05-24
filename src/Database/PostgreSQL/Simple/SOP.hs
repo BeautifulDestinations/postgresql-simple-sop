@@ -158,7 +158,7 @@ instance (KeyField a, KeyField b) => KeyField (a,b) where
 
 conjunction :: [Query] -> Query
 conjunction [] = "true"
-conjunction (q1:q2:[]) = "("<>q1<>") and ("<>q2<>")"
+conjunction (q1:[]) = "("<>q1<>")"
 conjunction (q1:qs) = "("<>q1<>") and "<>conjunction qs
 
 class HasTable a => HasKey a where
@@ -247,7 +247,7 @@ gfastInsert conn val = do
       qmarks = mconcat $ intersperse "," $ map (const "?") vargs
       fields = mconcat $ intersperse "," $ map fst vargs
       q = "insert into "<>tblName<>"("<>fields<>") select "<>qmarks<>
-          " where not exists (select 1 from "<>tblName<>" where "<>qkey
+          " where not exists (select 1 from "<>tblName<>" where "<>qkey<>")"
       args = map snd vargs
   execute conn q (args :. askey)
   return ()
