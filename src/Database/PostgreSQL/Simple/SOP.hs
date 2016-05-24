@@ -138,23 +138,36 @@ gselect conn q1 args = do
 ginsertNoKey :: forall r. (ToRow r, HasTable r) => Connection  -> r -> IO ()
 ginsertNoKey conn  val = do
   let fnms = fieldNames $ (Proxy :: Proxy r)
-  _ <- execute conn ("INSERT INTO " <> tableName (Proxy :: Proxy r) <> " (" <>
+      q = ("INSERT INTO " <> tableName (Proxy :: Proxy r) <> " (" <>
                      (fromString $ intercalate "," fnms ) <>
                      ") VALUES (" <>
                      (fromString $ intercalate "," $ map (const "?") fnms) <> ")")
+  _ <- execute conn q
                val
   return ()
 
 class KeyField a where
-   toFields :: a -> [Action]
-   default toFields :: ToField a => a -> [Action]
-   toFields = (:[]) . toField
+   keyToFields :: a -> [Action]
+   rowToKey :: RowParser a
+
+   default keyToFields :: ToField a => a -> [Action]
+   keyToFields = (:[]) . toField
+
+   default rowToKey :: FromField a => RowParser a
+   rowToKey = field
+
+newtype ParseKey a = ParseKey { unParseKey :: a }
+
+instance KeyField a => FromRow (ParseKey a) where
+  fromRow = fmap ParseKey rowToKey
 
 instance KeyField Int
 instance KeyField Text
 instance KeyField String
 instance (KeyField a, KeyField b) => KeyField (a,b) where
-  toFields (x,y) = toFields x ++ toFields y
+  keyToFields (x,y) = keyToFields x ++ keyToFields y
+  rowToKey = (,) <$> rowToKey <*> rowToKey
+
 
 conjunction :: [Query] -> Query
 conjunction [] = "true"
@@ -172,7 +185,7 @@ keyRestrict px key
   = let nms = keyNames px
         q1 nm = nm <> " = ? "
         q = conjunction $ map q1 nms
-    in (q, toFields key)
+    in (q, keyToFields key)
 
 -- |Fetch a row by its primary key
 
@@ -183,12 +196,13 @@ getByKey conn key = let (q, as) = keyRestrict (Proxy :: Proxy a) key
 -- |Delete a row (based on primary key)
 gdelete :: forall a . (HasKey a, KeyField (Key a)) => Connection -> a -> IO ()
 gdelete conn x = do let (q, as) = keyRestrict (Proxy :: Proxy a) $ getKey x
-                    execute conn ("delete from "<>tableName (Proxy :: Proxy a)<>" where "
-                                  <> q) as
+                        bigq = ("delete from "<>tableName (Proxy :: Proxy a)<>" where "
+                                  <> q)
+                    execute conn bigq  as
                     return ()
 
 -- |Insert a new value, respecting primary keys whether they are autoincrementing or not
-ginsert :: forall a . (HasKey a, KeyField (Key a), FromField (Key a)) => Connection -> a -> IO (Key a)
+ginsert :: forall a . (HasKey a, KeyField (Key a)) => Connection -> a -> IO (Key a)
 ginsert conn val = do
   if autoIncrementingKey (Proxy :: Proxy a)
      then ginsertSerial
@@ -207,7 +221,7 @@ ginsert conn val = do
            res <- query conn q qArgs
            case res of
              [] -> fail $ "no key returned from "++show tblName
-             Only k : _ -> return k
+             ParseKey k : _ -> return k
 
 
 -- |Update a row, based on its primary key
@@ -226,7 +240,7 @@ gupdate conn val = do
   return ()
 
 -- |If a row does not exist, insert it; otherwise update it
-gupsert :: forall a . (HasKey a, KeyField (Key a), FromField (Key a)) => Connection -> a -> IO (Key a)
+gupsert :: forall a . (HasKey a, KeyField (Key a)) => Connection -> a -> IO (Key a)
 gupsert conn val = do
   ex :: Maybe a <- getByKey conn $ getKey val
   case ex of
@@ -234,7 +248,7 @@ gupsert conn val = do
     Just _ -> gupdate conn val >> return (getKey val)
 
 -- |If a row does not exist, insert it; otherwise do nothing; in one SQL query
-gfastInsert ::  forall a . (HasKey a, KeyField (Key a), FromField (Key a)) => Connection -> a -> IO ()
+gfastInsert ::  forall a . (HasKey a, KeyField (Key a)) => Connection -> a -> IO ()
 gfastInsert conn val = do
   let (qkey, askey) = keyRestrict (Proxy :: Proxy a) $ getKey val
       kNames = keyNames (Proxy :: Proxy a)
